@@ -104,8 +104,17 @@ CREATE TABLE IF NOT EXISTS incidents (
 
 -- Future Expansion Placeholders (Not active in V1, but schema matches structure)
 -- CREATE TABLE client_users (id uuid PRIMARY KEY, user_id uuid, ...);
--- CREATE TABLE hotel_users (id uuid PRIMARY KEY, hotel_id uuid, user_id uuid, ...);
 -- CREATE TABLE agent_users (id uuid PRIMARY KEY, user_id uuid, ...);
+
+-- 7. hotel_profiles (Phase 2 - Espace Établissements)
+-- Lie un utilisateur Supabase Auth à un hôtel spécifique, leur donnant un accès limité à leurs données.
+CREATE TABLE IF NOT EXISTS hotel_profiles (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL UNIQUE, -- references auth.users(id)
+    hotel_id uuid NOT NULL REFERENCES hotels(id) ON DELETE CASCADE,
+    email text NOT NULL,
+    created_at timestamptz DEFAULT now()
+);
 
 
 -- ==========================================
@@ -118,66 +127,132 @@ ALTER TABLE room_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bookings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE incidents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hotel_profiles ENABLE ROW LEVEL SECURITY;
 
 -- Helper function to check if the current user is an authenticated admin
 CREATE OR REPLACE FUNCTION is_admin()
 RETURNS boolean AS $$
 BEGIN
-  -- V1 Simplicité : Si l'utilisateur est authentifié dans Supabase Auth
-  -- on vérifie s'il existe dans la table admin_profiles
   RETURN EXISTS (
-    SELECT 1 FROM admin_profiles 
+    SELECT 1 FROM admin_profiles
+    WHERE user_id = auth.uid()
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Helper function: retourne le hotel_id de l'utilisateur hôtelier connecté (null si pas hôtelier)
+CREATE OR REPLACE FUNCTION get_hotel_id_for_user()
+RETURNS uuid AS $$
+DECLARE
+  v_hotel_id uuid;
+BEGIN
+  SELECT hotel_id INTO v_hotel_id
+  FROM hotel_profiles
+  WHERE user_id = auth.uid();
+  RETURN v_hotel_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Helper function: vérifie si l'utilisateur courant est un gestionnaire d'hôtel
+CREATE OR REPLACE FUNCTION is_hotel_user()
+RETURNS boolean AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM hotel_profiles
     WHERE user_id = auth.uid()
   );
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- --- Policies for admin_profiles ---
-CREATE POLICY "Admins can view and manage admin profiles" 
-    ON admin_profiles 
-    FOR ALL 
-    TO authenticated 
+CREATE POLICY "Admins can view and manage admin profiles"
+    ON admin_profiles
+    FOR ALL
+    TO authenticated
     USING (user_id = auth.uid() OR is_admin());
 
--- --- Policies for hotels ---
-CREATE POLICY "Admins can perform all operations on hotels" 
-    ON hotels 
-    FOR ALL 
-    TO authenticated 
+-- --- Policies for hotel_profiles ---
+CREATE POLICY "Admins can manage hotel profiles"
+    ON hotel_profiles
+    FOR ALL
+    TO authenticated
     USING (is_admin());
 
+CREATE POLICY "Hotel users can view their own profile"
+    ON hotel_profiles
+    FOR SELECT
+    TO authenticated
+    USING (user_id = auth.uid());
+
+-- --- Policies for hotels ---
+-- Admins : accès total
+CREATE POLICY "Admins can perform all operations on hotels"
+    ON hotels
+    FOR ALL
+    TO authenticated
+    USING (is_admin());
+
+-- Hôteliers : peuvent lire et modifier UNIQUEMENT leur propre hôtel
+CREATE POLICY "Hotel users can view their own hotel"
+    ON hotels
+    FOR SELECT
+    TO authenticated
+    USING (id = get_hotel_id_for_user());
+
+CREATE POLICY "Hotel users can update their own hotel"
+    ON hotels
+    FOR UPDATE
+    TO authenticated
+    USING (id = get_hotel_id_for_user())
+    WITH CHECK (id = get_hotel_id_for_user());
+
 -- --- Policies for room_requests ---
--- Anyone (public client) can submit a request (INSERT)
-CREATE POLICY "Public can submit room requests" 
-    ON room_requests 
-    FOR INSERT 
-    TO public 
+-- Tout le monde (public client) peut soumettre une demande (INSERT)
+CREATE POLICY "Public can submit room requests"
+    ON room_requests
+    FOR INSERT
+    TO public
     WITH CHECK (true);
 
--- Only admins can select/update/delete requests
-CREATE POLICY "Admins can manage room requests" 
-    ON room_requests 
-    FOR ALL 
-    TO authenticated 
+-- Seuls les admins peuvent lire/modifier/supprimer les demandes
+CREATE POLICY "Admins can manage room requests"
+    ON room_requests
+    FOR ALL
+    TO authenticated
     USING (is_admin());
 
 -- --- Policies for bookings ---
-CREATE POLICY "Admins can manage bookings" 
-    ON bookings 
-    FOR ALL 
-    TO authenticated 
+-- Admins : accès total
+CREATE POLICY "Admins can manage bookings"
+    ON bookings
+    FOR ALL
+    TO authenticated
     USING (is_admin());
 
+-- Hôteliers : peuvent voir les réservations de leur hôtel + confirmer/annuler
+CREATE POLICY "Hotel users can view their bookings"
+    ON bookings
+    FOR SELECT
+    TO authenticated
+    USING (hotel_id = get_hotel_id_for_user());
+
+CREATE POLICY "Hotel users can update status of their bookings"
+    ON bookings
+    FOR UPDATE
+    TO authenticated
+    USING (hotel_id = get_hotel_id_for_user())
+    WITH CHECK (hotel_id = get_hotel_id_for_user());
+
 -- --- Policies for payments ---
-CREATE POLICY "Admins can manage payments" 
-    ON payments 
-    FOR ALL 
-    TO authenticated 
+CREATE POLICY "Admins can manage payments"
+    ON payments
+    FOR ALL
+    TO authenticated
     USING (is_admin());
 
 -- --- Policies for incidents ---
-CREATE POLICY "Admins can manage incidents" 
-    ON incidents 
-    FOR ALL 
-    TO authenticated 
+CREATE POLICY "Admins can manage incidents"
+    ON incidents
+    FOR ALL
+    TO authenticated
     USING (is_admin());
