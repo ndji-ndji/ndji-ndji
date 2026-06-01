@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../../lib/supabaseClient';
+import { supabase } from '../../../lib/supabaseClient';
 import { Hotel, Loader2 } from 'lucide-react';
 
 export default function HotelLoginPage() {
